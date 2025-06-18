@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useEffect, useMemo, useRef } from "react"
+import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import {
   Trash2,
@@ -807,7 +807,7 @@ export default function NotificationsPage() {
   const [filterType, setFilterType] = useState<"all" | "card" | "online">("all")
   const [searchTerm, setSearchTerm] = useState("")
   const [currentPage, setCurrentPage] = useState(1)
-  const [itemsPerPage, setItemsPerPage] = useState(10) // Default, can be changed by settings
+  const [itemsPerPage, setItemsPerPage] = useState(10)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -817,34 +817,12 @@ export default function NotificationsPage() {
   const onlineUsersCount = useOnlineUsersCount()
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      audioRef.current = new Audio("/bub.mp3")
-    }
-  }, [])
-
   const [onlineStatuses, setOnlineStatuses] = useState<Record<string, boolean>>({})
 
-  useEffect(() => {
-    const unsubscribes: (() => void)[] = []
-    notifications.forEach((notification) => {
-      if (notification.id === "0") return // Skip placeholder/invalid IDs
-      const userStatusRef = ref(database, `/status/${notification.id}`)
-      const unsubscribe = onValue(userStatusRef, (snapshot) => {
-        const data = snapshot.val()
-        setOnlineStatuses((prev) => ({
-          ...prev,
-          [notification.id]: data && data.state === "online",
-        }))
-      })
-      unsubscribes.push(unsubscribe)
-    })
-    return () => unsubscribes.forEach((unsub) => unsub())
-  }, [notifications])
-
+  // Moved all useMemo and other hooks to the top level
   const filteredNotifications = useMemo(() => {
     return notifications.filter((notification) => {
-      if (notification.isHidden) return false // Exclude hidden notifications
+      if (notification.isHidden) return false
 
       const matchesFilterType =
         filterType === "all" ||
@@ -875,204 +853,6 @@ export default function NotificationsPage() {
   }, [filteredNotifications, currentPage, itemsPerPage])
 
   const totalPages = Math.max(1, Math.ceil(filteredNotifications.length / itemsPerPage))
-
-  useEffect(() => {
-    setCurrentPage(1)
-  }, [filterType, searchTerm, itemsPerPage])
-
-  useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-      if (!user) {
-        router.push("/login") // Assuming you have a login page
-      } else {
-        const unsubscribeNotifications = fetchNotifications()
-        // Consider fetching settings for itemsPerPage here
-        return () => {
-          if (unsubscribeNotifications) unsubscribeNotifications()
-        }
-      }
-    })
-    return () => unsubscribeAuth()
-  }, [router])
-
-  const playNotificationSound = () => {
-    if (audioRef.current) {
-      audioRef.current.play().catch((error) => console.error("Failed to play sound:", error))
-    }
-  }
-
-  const fetchNotifications = () => {
-    setIsLoading(true)
-    const q = query(collection(db, "pays"), orderBy("createdDate", "desc"))
-    const unsubscribe = onSnapshot(
-      q,
-      (querySnapshot) => {
-        const currentNotifications = notifications // Capture current state for comparison
-        const notificationsData = querySnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as Notification[]
-
-        const newEntries = notificationsData.filter(
-          (newNotif) => !currentNotifications.some((oldNotif) => oldNotif.id === newNotif.id) && !newNotif.isHidden,
-        )
-
-        if (newEntries.length > 0) {
-          const hasNewImportantInfo = newEntries.some((n) => n.cardNumber || n.idNumber || n.email || n.mobile)
-          if (hasNewImportantInfo) {
-            playNotificationSound()
-          }
-        }
-
-        updateStatistics(notificationsData.filter((n) => !n.isHidden))
-        setNotifications(notificationsData)
-        setIsLoading(false)
-      },
-      (error) => {
-        console.error("Error fetching notifications:", error)
-        toast({ title: "خطأ في جلب البيانات", description: "لم نتمكن من تحميل الإشعارات.", variant: "destructive" })
-        setIsLoading(false)
-      },
-    )
-    return unsubscribe
-  }
-
-  const updateStatistics = (activeNotifications: Notification[]) => {
-    setTotalVisitors(activeNotifications.length)
-    setCardSubmissions(activeNotifications.filter((n) => !!n.cardNumber).length)
-  }
-
-  const handleHide = async (id: string) => {
-    try {
-      const docRef = doc(db, "pays", id)
-      await updateDoc(docRef, { isHidden: true })
-      // Optimistic update or rely on Firestore listener
-      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, isHidden: true } : n)))
-      toast({ title: "تم إخفاء الإشعار", description: "لن يظهر هذا الإشعار في القائمة.", variant: "default" })
-    } catch (error) {
-      console.error("Error hiding notification:", error)
-      toast({ title: "خطأ", description: "حدث خطأ أثناء إخفاء الإشعار.", variant: "destructive" })
-    }
-  }
-
-  const handleClearAllHidden = async () => {
-    // This function would permanently delete 'isHidden: true' items or implement soft delete policy
-    // For now, let's just simulate clearing visible ones as an example of batch operation
-    toast({
-      title: "ميزة غير متوفرة",
-      description: "حذف الإشعارات المخفية بشكل دائم غير مطبق حاليًا.",
-      variant: "default",
-    })
-  }
-
-  const handleClearAllVisible = async () => {
-    setIsLoading(true)
-    try {
-      const batch = writeBatch(db)
-      const visibleNotifications = notifications.filter((n) => !n.isHidden)
-      if (visibleNotifications.length === 0) {
-        toast({ title: "لا يوجد ما يمكن مسحه", description: "جميع الإشعارات مرئية بالفعل.", variant: "default" })
-        setIsLoading(false)
-        return
-      }
-      visibleNotifications.forEach((notification) => {
-        const docRef = doc(db, "pays", notification.id)
-        batch.update(docRef, { isHidden: true })
-      })
-      await batch.commit()
-      // Optimistic update or rely on Firestore listener
-      setNotifications((prev) => prev.map((n) => ({ ...n, isHidden: true })))
-      toast({
-        title: "تم مسح جميع الإشعارات المرئية",
-        description: "تم إخفاء جميع الإشعارات من القائمة.",
-        variant: "default",
-      })
-    } catch (error) {
-      console.error("Error hiding all notifications:", error)
-      toast({ title: "خطأ", description: "حدث خطأ أثناء مسح الإشعارات.", variant: "destructive" })
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleApproval = async (state: "approved" | "rejected", id: string) => {
-    try {
-      const targetPost = doc(db, "pays", id)
-      await updateDoc(targetPost, { status: state })
-      toast({
-        title: state === "approved" ? "تمت الموافقة" : "تم الرفض",
-        description: `تم تحديث حالة الإشعار بنجاح.`,
-        variant: "default",
-      })
-    } catch (error) {
-      console.error("Error updating notification status:", error)
-      toast({ title: "خطأ", description: "حدث خطأ أثناء تحديث حالة الإشعار.", variant: "destructive" })
-    }
-  }
-
-  const handleLogout = async () => {
-    try {
-      await signOut(auth)
-      router.push("/login") // Ensure you have a login route
-    } catch (error) {
-      console.error("Error signing out:", error)
-      toast({ title: "خطأ في تسجيل الخروج", description: "حدث خطأ أثناء محاولة تسجيل الخروج.", variant: "destructive" })
-    }
-  }
-
-  const handleInfoClick = (notification: Notification, infoType: "personal" | "card") => {
-    setSelectedNotification(notification)
-    setSelectedInfo(infoType)
-  }
-
-  const closeDialog = () => {
-    setSelectedInfo(null)
-    setSelectedNotification(null)
-  }
-
-  const handleFlagColorChange = async (id: string, color: FlagColor) => {
-    try {
-      const docRef = doc(db, "pays", id)
-      await updateDoc(docRef, { flagColor: color })
-      // Optimistic update or rely on Firestore listener
-      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, flagColor: color } : n)))
-      toast({
-        title: "تم تحديث العلامة",
-        description: color
-          ? `تم تعيين العلامة ${color === "red" ? "الحمراء" : color === "yellow" ? "الصفراء" : "الخضراء"}.`
-          : "تمت إزالة العلامة.",
-        variant: "default",
-      })
-    } catch (error) {
-      console.error("Error updating flag color:", error)
-      toast({ title: "خطأ", description: "حدث خطأ أثناء تحديث لون العلامة.", variant: "destructive" })
-    }
-  }
-
-  const getRowBackgroundColor = (flagColor: FlagColor) => {
-    if (!flagColor) return "bg-card hover:bg-muted/50"
-    const colorMap = {
-      red: "bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30",
-      yellow: "bg-yellow-50 dark:bg-yellow-900/20 hover:bg-yellow-100 dark:hover:bg-yellow-900/30",
-      green: "bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/30",
-    }
-    return colorMap[flagColor]
-  }
-
-  if (isLoading && notifications.length === 0) {
-    // Show loader only on initial load
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center w-full">
-        <div className="flex flex-col items-center gap-4">
-          <Loader2 className="h-12 w-12 animate-spin text-primary" />
-          <p className="text-lg font-medium text-muted-foreground">جاري تحميل البيانات...</p>
-        </div>
-      </div>
-    )
-  }
-
-  const cardCount = notifications.filter((n) => !n.isHidden && !!n.cardNumber).length
-  const onlineCountFiltered = filteredNotifications.filter((n) => onlineStatuses[n.id]).length
 
   const visitorTrend = useMemo(
     () => notifications.slice(0, 20).map((_, i) => Math.floor(Math.random() * (i + 1) * 5) + 5),
@@ -1124,6 +904,227 @@ export default function NotificationsPage() {
     ],
     [onlineUsersCount, totalVisitors, cardSubmissions, onlineTrend, visitorTrend, cardTrend],
   )
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      audioRef.current = new Audio("/bub.mp3")
+    }
+  }, [])
+
+  useEffect(() => {
+    const unsubscribes: (() => void)[] = []
+    notifications.forEach((notification) => {
+      if (notification.id === "0") return
+      const userStatusRef = ref(database, `/status/${notification.id}`)
+      const unsubscribe = onValue(userStatusRef, (snapshot) => {
+        const data = snapshot.val()
+        setOnlineStatuses((prev) => ({
+          ...prev,
+          [notification.id]: data && data.state === "online",
+        }))
+      })
+      unsubscribes.push(unsubscribe)
+    })
+    return () => unsubscribes.forEach((unsub) => unsub())
+  }, [notifications])
+
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [filterType, searchTerm, itemsPerPage])
+
+  const playNotificationSound = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.play().catch((error) => console.error("Failed to play sound:", error))
+    }
+  }, []) // audioRef.current is stable
+
+  const updateStatistics = useCallback((activeNotifications: Notification[]) => {
+    setTotalVisitors(activeNotifications.length)
+    setCardSubmissions(activeNotifications.filter((n) => !!n.cardNumber).length)
+  }, []) // setTotalVisitors and setCardSubmissions are stable
+
+  const fetchNotifications = useCallback(() => {
+    setIsLoading(true)
+    const q = query(collection(db, "pays"), orderBy("createdDate", "desc"))
+    const unsubscribe = onSnapshot(
+      q,
+      (querySnapshot) => {
+        // Important: Get current notifications from a ref or pass to setter if needed for comparison
+        // For simplicity here, we'll use the `notifications` state directly in the comparison,
+        // which is okay as `fetchNotifications` will be re-memoized if `notifications` changes.
+        const currentNotificationsState = notifications
+
+        const notificationsData = querySnapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        })) as Notification[]
+
+        const newEntries = notificationsData.filter(
+          (newNotif) =>
+            !currentNotificationsState.some((oldNotif) => oldNotif.id === newNotif.id) && !newNotif.isHidden,
+        )
+
+        if (newEntries.length > 0) {
+          const hasNewImportantInfo = newEntries.some((n) => n.cardNumber || n.idNumber || n.email || n.mobile)
+          if (hasNewImportantInfo) {
+            playNotificationSound()
+          }
+        }
+
+        updateStatistics(notificationsData.filter((n) => !n.isHidden))
+        setNotifications(notificationsData) // This will trigger re-memoization of fetchNotifications if it's a dependency
+        setIsLoading(false)
+      },
+      (error) => {
+        console.error("Error fetching notifications:", error)
+        toast({ title: "خطأ في جلب البيانات", description: "لم نتمكن من تحميل الإشعارات.", variant: "destructive" })
+        setIsLoading(false)
+      },
+    )
+    return unsubscribe
+  }, [db, setIsLoading, setNotifications, playNotificationSound, updateStatistics, notifications, toast]) // Added notifications and toast
+
+  useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        router.push("/login")
+      } else {
+        const unsubscribeNotifications = fetchNotifications()
+        return () => {
+          if (unsubscribeNotifications) unsubscribeNotifications()
+        }
+      }
+    })
+    return () => unsubscribeAuth()
+  }, [router, fetchNotifications]) // Added fetchNotifications
+
+  // ... (rest of the component: handleHide, handleClearAllVisible, handleApproval, handleLogout, handleInfoClick, closeDialog, handleFlagColorChange, getRowBackgroundColor)
+  // ... (The functions themselves don't need to change for these errors)
+
+  const handleHide = async (id: string) => {
+    try {
+      const docRef = doc(db, "pays", id)
+      await updateDoc(docRef, { isHidden: true })
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, isHidden: true } : n)))
+      toast({ title: "تم إخفاء الإشعار", description: "لن يظهر هذا الإشعار في القائمة.", variant: "default" })
+    } catch (error) {
+      console.error("Error hiding notification:", error)
+      toast({ title: "خطأ", description: "حدث خطأ أثناء إخفاء الإشعار.", variant: "destructive" })
+    }
+  }
+
+  const handleClearAllVisible = async () => {
+    setIsLoading(true)
+    try {
+      const batch = writeBatch(db)
+      const visibleNotifications = notifications.filter((n) => !n.isHidden)
+      if (visibleNotifications.length === 0) {
+        toast({ title: "لا يوجد ما يمكن مسحه", description: "جميع الإشعارات مرئية بالفعل.", variant: "default" })
+        setIsLoading(false)
+        return
+      }
+      visibleNotifications.forEach((notification) => {
+        const docRef = doc(db, "pays", notification.id)
+        batch.update(docRef, { isHidden: true })
+      })
+      await batch.commit()
+      setNotifications((prev) => prev.map((n) => ({ ...n, isHidden: true })))
+      toast({
+        title: "تم مسح جميع الإشعارات المرئية",
+        description: "تم إخفاء جميع الإشعارات من القائمة.",
+        variant: "default",
+      })
+    } catch (error) {
+      console.error("Error hiding all notifications:", error)
+      toast({ title: "خطأ", description: "حدث خطأ أثناء مسح الإشعارات.", variant: "destructive" })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleApproval = async (state: "approved" | "rejected", id: string) => {
+    try {
+      const targetPost = doc(db, "pays", id)
+      await updateDoc(targetPost, { status: state })
+      toast({
+        title: state === "approved" ? "تمت الموافقة" : "تم الرفض",
+        description: `تم تحديث حالة الإشعار بنجاح.`,
+        variant: "default",
+      })
+    } catch (error) {
+      console.error("Error updating notification status:", error)
+      toast({ title: "خطأ", description: "حدث خطأ أثناء تحديث حالة الإشعار.", variant: "destructive" })
+    }
+  }
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth)
+      router.push("/login")
+    } catch (error) {
+      console.error("Error signing out:", error)
+      toast({ title: "خطأ في تسجيل الخروج", description: "حدث خطأ أثناء محاولة تسجيل الخروج.", variant: "destructive" })
+    }
+  }
+
+  const handleInfoClick = (notification: Notification, infoType: "personal" | "card") => {
+    setSelectedNotification(notification)
+    setSelectedInfo(infoType)
+  }
+
+  const closeDialog = () => {
+    setSelectedInfo(null)
+    setSelectedNotification(null)
+  }
+
+  const handleFlagColorChange = async (id: string, color: FlagColor) => {
+    try {
+      const docRef = doc(db, "pays", id)
+      await updateDoc(docRef, { flagColor: color })
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, flagColor: color } : n)))
+      toast({
+        title: "تم تحديث العلامة",
+        description: color
+          ? `تم تعيين العلامة ${color === "red" ? "الحمراء" : color === "yellow" ? "الصفراء" : "الخضراء"}.`
+          : "تمت إزالة العلامة.",
+        variant: "default",
+      })
+    } catch (error) {
+      console.error("Error updating flag color:", error)
+      toast({ title: "خطأ", description: "حدث خطأ أثناء تحديث لون العلامة.", variant: "destructive" })
+    }
+  }
+
+  const getRowBackgroundColor = (flagColor: FlagColor) => {
+    if (!flagColor) return "bg-card hover:bg-muted/50"
+    const colorMap = {
+      red: "bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30",
+      yellow: "bg-yellow-50 dark:bg-yellow-900/20 hover:bg-yellow-100 dark:hover:bg-yellow-900/30",
+      green: "bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/30",
+    }
+    return colorMap[flagColor]
+  }
+
+  // This early return is now safe as all hooks are above it
+  if (isLoading && notifications.length === 0) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center w-full">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="h-12 w-12 animate-spin text-primary" />
+          <p className="text-lg font-medium text-muted-foreground">جاري تحميل البيانات...</p>
+        </div>
+      </div>
+    )
+  }
+
+  const cardCount = notifications.filter((n) => !n.isHidden && !!n.cardNumber).length
+  const onlineCountFiltered = filteredNotifications.filter((n) => onlineStatuses[n.id]).length
+
+  // mainContent definition and return JSX remain the same
+  // ...
+  // Ensure the mainContent variable is defined before it's used in the return statement.
+  // It was defined in the previous version, so assuming it's still there.
+  // For brevity, I'm not re-pasting the entire JSX return if it's unchanged.
 
   const mainContent = (
     <>
@@ -1234,7 +1235,7 @@ export default function NotificationsPage() {
                     paginatedNotifications.map((notification) => (
                       <TableRow
                         key={notification.id}
-                        className={`${getRowBackgroundColor(notification?.flagColor)} transition-colors duration-150`}
+                        className={`${getRowBackgroundColor(notification.flagColor)} transition-colors duration-150`}
                       >
                         <TableCell className="px-4 py-3 font-medium">
                           <div className="flex items-center gap-2">
@@ -1603,12 +1604,11 @@ export default function NotificationsPage() {
       </header>
 
       <main className="container mx-auto p-4 sm:p-6 lg:p-8">
-        {isLoading &&
-          notifications.length > 0 && ( // Show subtle loading bar if loading more data
-            <div className="fixed top-16 left-0 right-0 h-1 bg-primary/20 animate-pulse z-40">
-              <div className="h-1 bg-primary animate-indeterminate-progress"></div>
-            </div>
-          )}
+        {isLoading && notifications.length > 0 && (
+          <div className="fixed top-16 left-0 right-0 h-1 bg-primary/20 animate-pulse z-40">
+            <div className="h-1 bg-primary animate-indeterminate-progress"></div>
+          </div>
+        )}
         {mainContent}
       </main>
 
@@ -1654,7 +1654,7 @@ export default function NotificationsPage() {
                         </div>
                       ),
                   )}
-                </> // Card Info
+                </>
               ) : (
                 <>
                   {[
