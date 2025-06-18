@@ -819,7 +819,7 @@ export default function NotificationsPage() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      audioRef.current = new Audio("/beep_sms.mp3")
+      audioRef.current = new Audio("/bub.mp3")
     }
   }, [])
 
